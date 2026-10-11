@@ -145,29 +145,69 @@ def derive_session(
 
 
 def validate_and_complete_handshake(
-    receiver_ephemeral_priv: ec.EllipticCurvePrivateKey,
-    peer_ephemeral_pub: ec.EllipticCurvePublicKey,
-    peer_ephemeral_pub_bytes: bytes,
-    peer_signature: bytes,
-    peer_identity_pub: ec.EllipticCurvePublicKey,
+    local_ephemeral_priv: ec.EllipticCurvePrivateKey | None = None,
+    peer_ephemeral_pub: ec.EllipticCurvePublicKey | None = None,
+    peer_ephemeral_pub_bytes: bytes | None = None,
+    peer_signature: bytes | None = None,
+    peer_identity_pub: ec.EllipticCurvePublicKey | None = None,
+    *,
+    receiver_ephemeral_priv: ec.EllipticCurvePrivateKey | None = None,
+    sender_ephemeral_priv: ec.EllipticCurvePrivateKey | None = None,
 ) -> tuple[bytes, bytes]:
-    """Receiver-side handshake verification and session derivation.
+    """Verify peer handshake signature and derive (session_key, session_id).
 
     Per Guardrails.md section 6.2:
     - Step 3: Each side verifies the peer's signature first.
       If verification fails, abort and do not derive anything.
     - Step 4: Compute ECDH shared secret and derive session keys with HKDF.
 
+    Symmetric handshake completion helper for both sender and receiver roles.
+    Accepts `local_ephemeral_priv`, `sender_ephemeral_priv`, or
+    `receiver_ephemeral_priv` for the local party's ephemeral private key.
+
+    If `peer_ephemeral_pub` is omitted, it is automatically deserialized from
+    `peer_ephemeral_pub_bytes` with strict P-256 curve validation. When both
+    are provided, `peer_ephemeral_pub` must match `peer_ephemeral_pub_bytes`.
+
     Raises:
-        ValueError: If peer signature is invalid (MITM or tampering detected).
+        TypeError: If key types are invalid or required arguments are missing.
+        ValueError: If peer signature verification fails (MITM detected) or
+                    if peer public key does not match signed bytes.
     """
+    provided_privates = [
+        ("local_ephemeral_priv", local_ephemeral_priv),
+        ("sender_ephemeral_priv", sender_ephemeral_priv),
+        ("receiver_ephemeral_priv", receiver_ephemeral_priv),
+    ]
+    active_privates = [name for name, val in provided_privates if val is not None]
+    if len(active_privates) == 0:
+        raise TypeError("Missing required ephemeral private key.")
+    if len(active_privates) > 1:
+        names = ", ".join(active_privates)
+        raise TypeError(f"Conflicting ephemeral private key arguments provided: {names}. Provide only one.")
+
+    priv = local_ephemeral_priv if local_ephemeral_priv is not None else (
+        sender_ephemeral_priv if sender_ephemeral_priv is not None else receiver_ephemeral_priv
+    )
+
+    if peer_ephemeral_pub_bytes is None:
+        raise TypeError("Peer ephemeral public key bytes must be bytes-like.")
+    if peer_signature is None:
+        raise TypeError("Missing required peer signature.")
+    if peer_identity_pub is None:
+        raise TypeError("Missing required peer identity public key.")
+
     if not isinstance(peer_ephemeral_pub_bytes, (bytes, bytearray, memoryview)):
         raise TypeError("Peer ephemeral public key bytes must be bytes-like.")
-    if serialize_public_key(peer_ephemeral_pub) != bytes(peer_ephemeral_pub_bytes):
-        raise ValueError("Handshake aborted: Peer public key does not match signed bytes.")
+
+    if peer_ephemeral_pub is None:
+        peer_ephemeral_pub = deserialize_public_key(bytes(peer_ephemeral_pub_bytes))
+    else:
+        if serialize_public_key(peer_ephemeral_pub) != bytes(peer_ephemeral_pub_bytes):
+            raise ValueError("Handshake aborted: Peer public key does not match signed bytes.")
 
     is_valid = ecdsa_verify(peer_identity_pub, peer_ephemeral_pub_bytes, peer_signature)
     if not is_valid:
         raise ValueError("Handshake aborted: Peer signature verification failed (MITM detected).")
 
-    return derive_session(receiver_ephemeral_priv, peer_ephemeral_pub)
+    return derive_session(priv, peer_ephemeral_pub)

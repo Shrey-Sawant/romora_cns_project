@@ -117,6 +117,46 @@ The assignment follows the roster order. Swap names freely.
 | Gangesh Dhangar | RSA: key generation and message encryption (OAEP padding) |
 | Pranav Gadge | Steganography: LSB embedding, payload header (length), bit conversion, capacity check, stego-image output |
 
+#### Sender-Side ECC-DHE Interface Guide (`crypto/ecdh.py`)
+
+The sender-side contribution provides ephemeral keypair generation, PEM serialization, handshake validation, and Option A session material derivation:
+
+```python
+from crypto import ecdh, ecdsa
+from core.send import send_message
+
+# 1. Ephemeral keypair generation and handshake initiation
+sender_eph_priv, sender_eph_pub = ecdh.generate_keypair()
+sender_eph_bytes = ecdh.serialize_public_key(sender_eph_pub)
+sender_signature = ecdsa.sign(sender_identity_priv, sender_eph_bytes)
+# Exchange: send (sender_eph_bytes, sender_signature, sender_identity_pub) to peer
+
+# 2. Handshake validation & session derivation upon receiving receiver's response
+# Input: peer_ephemeral_pub_bytes, peer_signature, peer_identity_pub
+session_key, session_id = ecdh.validate_and_complete_handshake(
+    sender_ephemeral_priv=sender_eph_priv,
+    peer_ephemeral_pub_bytes=receiver_eph_bytes,
+    peer_signature=receiver_signature,
+    peer_identity_pub=receiver_identity_pub,
+)
+# Protocol Note (Option A):
+# - session_id: 32-byte identifier derived via HKDF-SHA256 (info=b"romora-v1-sid").
+#   Bound into the sender's ECDSA signature (session_id || rsa_ciphertext) and passed to send_message().
+# - session_key: 32-byte key independently derived via HKDF-SHA256 (info=b"romora-v1-session").
+#   Reserved for symmetric encryption / hybrid mode; not passed to send_message().
+
+# 3. Supply session_id to the core sender pipeline
+stego_png = send_message(
+    message=message,
+    cover_png=cover_png_bytes,
+    session_id=session_id,
+    sender_ecdsa_priv=sender_identity_priv,
+    receiver_rsa_pub=receiver_rsa_pub,
+)
+```
+
+
+
 ### Decryption team (receiver side)
 
 | Member | Task |

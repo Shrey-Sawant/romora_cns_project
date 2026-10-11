@@ -465,3 +465,179 @@ def test_derive_session_rejects_invalid_key_types_and_curves():
         derive_session(foreign_priv, alice_pub)
     with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
         derive_session(alice_priv, foreign_pub)
+
+
+def test_sender_handshake_completion_flow():
+    """Verify sender-side handshake completion using sender_ephemeral_priv and auto-deserialization."""
+    alice_id_priv, alice_id_pub = generate_identity_keypair()
+    bob_id_priv, bob_id_pub = generate_identity_keypair()
+
+    alice_eph_priv, alice_eph_pub = generate_keypair()
+    alice_pub_bytes = serialize_public_key(alice_eph_pub)
+    alice_sig = ecdsa_sign(alice_id_priv, alice_pub_bytes)
+
+    bob_eph_priv, bob_eph_pub = generate_keypair()
+    bob_pub_bytes = serialize_public_key(bob_eph_pub)
+    bob_sig = ecdsa_sign(bob_id_priv, bob_pub_bytes)
+
+    # Alice (Sender) completes handshake using sender_ephemeral_priv keyword
+    alice_key, alice_sid = validate_and_complete_handshake(
+        sender_ephemeral_priv=alice_eph_priv,
+        peer_ephemeral_pub_bytes=bob_pub_bytes,
+        peer_signature=bob_sig,
+        peer_identity_pub=bob_id_pub,
+    )
+
+    # Bob (Receiver) completes handshake using local_ephemeral_priv keyword
+    bob_key, bob_sid = validate_and_complete_handshake(
+        local_ephemeral_priv=bob_eph_priv,
+        peer_ephemeral_pub_bytes=alice_pub_bytes,
+        peer_signature=alice_sig,
+        peer_identity_pub=alice_id_pub,
+    )
+
+    assert len(alice_key) == 32
+    assert len(alice_sid) == 32
+    assert alice_key == bob_key
+    assert alice_sid == bob_sid
+    assert alice_key != alice_sid
+
+
+def test_handshake_rejects_missing_required_arguments():
+    """Verify validate_and_complete_handshake raises TypeError on missing required parameters."""
+    alice_priv, alice_pub = generate_keypair()
+    alice_pub_bytes = serialize_public_key(alice_pub)
+    _, alice_id_pub = generate_identity_keypair()
+
+    with pytest.raises(TypeError, match="Missing required ephemeral private key."):
+        validate_and_complete_handshake(
+            peer_ephemeral_pub_bytes=alice_pub_bytes,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=alice_id_pub,
+        )
+
+    with pytest.raises(TypeError, match="Peer ephemeral public key bytes must be bytes-like."):
+        validate_and_complete_handshake(
+            local_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=None,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=alice_id_pub,
+        )
+
+    with pytest.raises(TypeError, match="Missing required peer signature."):
+        validate_and_complete_handshake(
+            local_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=alice_pub_bytes,
+            peer_signature=None,
+            peer_identity_pub=alice_id_pub,
+        )
+
+    with pytest.raises(TypeError, match="Missing required peer identity public key."):
+        validate_and_complete_handshake(
+            local_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=alice_pub_bytes,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=None,
+        )
+
+
+def test_handshake_auto_deserializes_and_rejects_non_p256_ephemeral_bytes():
+    """Verify auto-deserialization enforces P-256 curve when peer_ephemeral_pub is omitted."""
+    alice_priv, _ = generate_keypair()
+    _, bob_id_pub = generate_identity_keypair()
+
+    foreign_priv = ec.generate_private_key(ec.SECP384R1())
+    foreign_pub_pem = foreign_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        validate_and_complete_handshake(
+            sender_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=foreign_pub_pem,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=bob_id_pub,
+        )
+
+
+def test_handshake_preserves_security_invariant_with_auto_deserialized_key():
+    """Verify MITM signature abort invariant still holds when peer_ephemeral_pub is omitted."""
+    alice_priv, _ = generate_keypair()
+    bob_priv, bob_pub = generate_keypair()
+    bob_pub_bytes = serialize_public_key(bob_pub)
+    _, bob_id_pub = generate_identity_keypair()
+
+    bogus_sig = b"Y" * 64
+
+    with pytest.raises(ValueError, match="Handshake aborted: Peer signature verification failed"):
+        validate_and_complete_handshake(
+            sender_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=bob_pub_bytes,
+            peer_signature=bogus_sig,
+            peer_identity_pub=bob_id_pub,
+        )
+
+
+def test_handshake_rejects_conflicting_private_key_aliases():
+    """Verify validate_and_complete_handshake raises TypeError when multiple aliases are supplied."""
+    alice_priv, _ = generate_keypair()
+    bob_priv, bob_pub = generate_keypair()
+    bob_pub_bytes = serialize_public_key(bob_pub)
+    _, bob_id_pub = generate_identity_keypair()
+
+    # Conflicting sender and receiver aliases
+    with pytest.raises(TypeError, match="Conflicting ephemeral private key arguments provided"):
+        validate_and_complete_handshake(
+            sender_ephemeral_priv=alice_priv,
+            receiver_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=bob_pub_bytes,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=bob_id_pub,
+        )
+
+    # Conflicting positional (local_ephemeral_priv) and keyword alias
+    with pytest.raises(TypeError, match="Conflicting ephemeral private key arguments provided"):
+        validate_and_complete_handshake(
+            alice_priv,
+            sender_ephemeral_priv=alice_priv,
+            peer_ephemeral_pub_bytes=bob_pub_bytes,
+            peer_signature=b"x" * 64,
+            peer_identity_pub=bob_id_pub,
+        )
+
+
+def test_handshake_backward_compatibility_positional_and_receiver_keyword():
+    """Verify exact backward compatibility with positional invocation and receiver_ephemeral_priv keyword."""
+    alice_id_priv, alice_id_pub = generate_identity_keypair()
+    bob_id_priv, bob_id_pub = generate_identity_keypair()
+
+    alice_priv, alice_pub = generate_keypair()
+    alice_pub_bytes = serialize_public_key(alice_pub)
+    alice_sig = ecdsa_sign(alice_id_priv, alice_pub_bytes)
+
+    bob_priv, bob_pub = generate_keypair()
+
+    expected_key, expected_sid = derive_session(bob_priv, alice_pub)
+
+    # 1. Backward compatibility: Original receiver keyword with all arguments
+    key_kw, sid_kw = validate_and_complete_handshake(
+        receiver_ephemeral_priv=bob_priv,
+        peer_ephemeral_pub=alice_pub,
+        peer_ephemeral_pub_bytes=alice_pub_bytes,
+        peer_signature=alice_sig,
+        peer_identity_pub=alice_id_pub,
+    )
+    assert key_kw == expected_key
+    assert sid_kw == expected_sid
+
+    # 2. Backward compatibility: Positional invocation with 5 arguments
+    key_pos, sid_pos = validate_and_complete_handshake(
+        bob_priv,
+        alice_pub,
+        alice_pub_bytes,
+        alice_sig,
+        alice_id_pub,
+    )
+    assert key_pos == expected_key
+    assert sid_pos == expected_sid
