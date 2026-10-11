@@ -84,11 +84,18 @@ The report doesn't fix a stack, so these are suggestions. Change them if the tea
 ```bash
 git clone <repo-url> && cd romora
 pip install -r requirements.txt
-python -m backend.app        # start the API
-# open the frontend at http://localhost:3000
+python -m uvicorn backend.app:app --reload  # start the API at http://localhost:8000
+cd frontend
+npm install
+npm run dev                  # open the URL printed by Vite (usually :5173)
 ```
 
-*(Update these commands once the code is in place.)*
+The API exposes `POST /keys/generate`, `POST /handshake/init`, `POST /handshake/complete`,
+`POST /send`, and `POST /receive`. The send and receive routes call the existing core pipelines;
+the send route returns a binary PNG. Identity and image-session state is held in backend process
+memory for the demo, so keep one backend process running for a complete exchange. Private keys
+are not returned to the browser. Do not expose the demo service publicly without HTTPS,
+authentication, and production key storage.
 
 ## Work Distribution (10 members)
 
