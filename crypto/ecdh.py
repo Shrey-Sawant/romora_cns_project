@@ -99,6 +99,10 @@ def compute_shared_secret(
         raise TypeError("Private key must be an EllipticCurvePrivateKey instance.")
     if not isinstance(peer_public_key, ec.EllipticCurvePublicKey):
         raise TypeError("Peer public key must be an EllipticCurvePublicKey instance.")
+    if private_key.curve.name != "secp256r1":
+        raise ValueError(f"Expected secp256r1 curve, got {private_key.curve.name}.")
+    if peer_public_key.curve.name != "secp256r1":
+        raise ValueError(f"Expected secp256r1 curve, got {peer_public_key.curve.name}.")
 
     return private_key.exchange(ec.ECDH(), peer_public_key)
 

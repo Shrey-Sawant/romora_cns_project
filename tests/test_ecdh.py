@@ -1,4 +1,5 @@
 import pytest
+from cryptography.hazmat.primitives.asymmetric import ec
 
 from crypto.ecdh import (
     compute_shared_secret,
@@ -112,3 +113,27 @@ def test_validate_and_complete_handshake_aborts_on_mitm():
             peer_signature=bogus_sig,
             peer_identity_pub=alice_id_pub,  # Bob checks against Alice's identity
         )
+
+
+def test_compute_shared_secret_p256_returns_32_bytes():
+    alice_priv, alice_pub = generate_keypair()
+    bob_priv, bob_pub = generate_keypair()
+
+    secret_ab = compute_shared_secret(alice_priv, bob_pub)
+    secret_ba = compute_shared_secret(bob_priv, alice_pub)
+
+    assert isinstance(secret_ab, bytes)
+    assert len(secret_ab) == 32
+    assert secret_ab == secret_ba
+
+
+def test_compute_shared_secret_rejects_non_p256_curve():
+    alice_priv, alice_pub = generate_keypair()
+    foreign_priv = ec.generate_private_key(ec.SECP384R1())
+    foreign_pub = foreign_priv.public_key()
+
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        compute_shared_secret(alice_priv, foreign_pub)
+
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        compute_shared_secret(foreign_priv, alice_pub)

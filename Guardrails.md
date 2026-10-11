@@ -110,13 +110,13 @@ Roles: **A** = sender, **B** = receiver. Every party holds a long-term **ECDSA i
 1. A and B each generate a fresh ephemeral ECDH P-256 key pair.
 2. Each side **signs its ephemeral ECDH public key with its ECDSA identity key** and sends `(ecdh_pub, signature, ecdsa_identity_pub)`.
 3. Each side **verifies the peer's signature first**. If verification fails, **abort** and do not derive anything.
-4. Both compute the ECDH shared secret, then derive a `session_key` with HKDF-SHA256 (info = `"romora-v1-session"`). The raw shared secret must never be used directly.
+4. Both compute the ECDH shared secret, then derive a 32-byte `session_key` using HKDF-SHA256 with `info = b"romora-v1-session"` and an independent 32-byte `session_id` using HKDF-SHA256 with `info = b"romora-v1-sid"`. Both outputs are derived independently from the same ECDH shared secret; the raw shared secret must never be used directly as an application-level key or identifier. Distinct HKDF `info` values provide domain separation between the two outputs.
 
 ### 6.3 Send (A → B)
 
 1. Encode the message as UTF-8 and check that its length is within the RSA-OAEP limit (section 8).
 2. Encrypt with **B's RSA public key** using RSA-OAEP (SHA-256) to get `rsa_ciphertext`.
-3. Compute `sig = ECDSA_sign(A_identity_priv, session_id || rsa_ciphertext)`, where `session_id` is derived from the session key (HKDF, info = `"romora-v1-sid"`).
+3. Compute `sig = ECDSA_sign(A_identity_priv, session_id || rsa_ciphertext)`, where `session_id` is the 32-byte identifier independently derived from the ECDH shared secret (HKDF-SHA256, info = `b"romora-v1-sid"`).
 4. Build the payload (section 7) as `header | rsa_ciphertext | sig`.
 5. Convert to bits and embed in the LSBs of the cover PNG. Return the **stego-image as PNG**.
 
