@@ -100,6 +100,15 @@ On the Receive screen:
      $$\text{Capacity in bytes} = \frac{\text{width} \times \text{height} \times 3}{8}$$
      Ensure capacity $\ge 329\text{ bytes}$ ($\ge 878\text{ pixels}$).
 
+### 3.4. Integrate Pranav's Sender-Side LSB Embedder
+
+- **Pranav Gadge:** The sender-side LSB embedding module is implemented in `stego/embed.py`. It accepts a cover image and an already-serialized payload, embeds the payload bits into the RGB channel LSBs, validates image capacity, preserves RGBA transparency, and returns the stego-image as PNG bytes.
+- **Manasvi More (Backend):** Integrate `stego.embed.embed()` into the send pipeline after encryption and payload serialization. Return the generated PNG bytes from the API using `image/png`.
+- **Vivek Dagale (Frontend):** Connect the image-upload and send interface to the backend API. Allow users to select a cover image, initiate the send operation, preview the resulting stego-image, and download it as a PNG.
+- **Ayushri Dalvi (Receiver-side Steganography):** Ensure the extraction module uses the same payload format, bit ordering, and RGB traversal order so the original serialized payload can be reconstructed correctly.
+
+The embedder does not perform encryption or add a second payload header. The backend must pass it the complete serialized payload defined by `core/payload.py`.
+
 ---
 
 ## 4. Suggestions for the Final ACNS-DC Report & Presentation
