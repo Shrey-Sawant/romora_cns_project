@@ -161,6 +161,11 @@ def validate_and_complete_handshake(
     Raises:
         ValueError: If peer signature is invalid (MITM or tampering detected).
     """
+    if not isinstance(peer_ephemeral_pub_bytes, (bytes, bytearray, memoryview)):
+        raise TypeError("Peer ephemeral public key bytes must be bytes-like.")
+    if serialize_public_key(peer_ephemeral_pub) != bytes(peer_ephemeral_pub_bytes):
+        raise ValueError("Handshake aborted: Peer public key does not match signed bytes.")
+
     is_valid = ecdsa_verify(peer_identity_pub, peer_ephemeral_pub_bytes, peer_signature)
     if not is_valid:
         raise ValueError("Handshake aborted: Peer signature verification failed (MITM detected).")

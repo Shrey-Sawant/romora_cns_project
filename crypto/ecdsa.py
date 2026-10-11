@@ -36,6 +36,8 @@ def _der_to_raw(signature: bytes) -> bytes:
 
 def _raw_to_der(signature: bytes) -> bytes:
     """Convert a raw 64-byte r||s signature into DER format for verification."""
+    if not isinstance(signature, (bytes, bytearray, memoryview)):
+        raise TypeError("Signature must be bytes-like.")
     if len(signature) != 64:
         raise ValueError("ECDSA signature must be exactly 64 raw bytes (r || s).")
 
@@ -64,7 +66,7 @@ def verify(public_key: ec.EllipticCurvePublicKey, message: str | bytes, signatur
         der_signature = _raw_to_der(signature)
         public_key.verify(der_signature, data, ec.ECDSA(hashes.SHA256()))
         return True
-    except (ValueError, InvalidSignature):
+    except (ValueError, InvalidSignature, TypeError):
         return False
 
 
@@ -79,9 +81,13 @@ def serialize_private_key(private_key: ec.EllipticCurvePrivateKey) -> bytes:
 
 def deserialize_private_key(data: bytes) -> ec.EllipticCurvePrivateKey:
     """Deserialize an EC private key from PKCS#8 PEM bytes."""
-    private_key = serialization.load_pem_private_key(data, password=None)
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("Private key data must be bytes-like.")
+    private_key = serialization.load_pem_private_key(bytes(data), password=None)
     if not isinstance(private_key, ec.EllipticCurvePrivateKey):
         raise TypeError("The provided key is not an EC private key.")
+    if private_key.curve.name != "secp256r1":
+        raise ValueError(f"Expected secp256r1 curve, got {private_key.curve.name}.")
     return private_key
 
 
@@ -95,9 +101,13 @@ def serialize_public_key(public_key: ec.EllipticCurvePublicKey) -> bytes:
 
 def deserialize_public_key(data: bytes) -> ec.EllipticCurvePublicKey:
     """Deserialize an EC public key from PEM bytes."""
-    public_key = serialization.load_pem_public_key(data)
+    if not isinstance(data, (bytes, bytearray, memoryview)):
+        raise TypeError("Public key data must be bytes-like.")
+    public_key = serialization.load_pem_public_key(bytes(data))
     if not isinstance(public_key, ec.EllipticCurvePublicKey):
         raise TypeError("The provided key is not an EC public key.")
+    if public_key.curve.name != "secp256r1":
+        raise ValueError(f"Expected secp256r1 curve, got {public_key.curve.name}.")
     return public_key
 
 

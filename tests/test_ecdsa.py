@@ -1,4 +1,6 @@
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, rsa
 
 from crypto.ecdsa import (
     deserialize_private_key,
@@ -62,3 +64,89 @@ def test_private_key_serialization_round_trip():
     encoded = serialize_private_key(private_key)
     restored = deserialize_private_key(encoded)
     assert restored.private_numbers() == private_key.private_numbers()
+
+
+def test_sign_and_verify_exact_bytes():
+    private_key, public_key = generate_keypair()
+    raw_payload = b"\x00\xff\xaa\x55binary\x00data\x01\x02\x03"
+
+    signature = sign(private_key, raw_payload)
+    assert len(signature) == 64
+    assert verify(public_key, raw_payload, signature) is True
+
+    # Modified bytes must not verify
+    tampered_payload = b"\x00\xff\xaa\x55binary\x00data\x01\x02\x04"
+    assert verify(public_key, tampered_payload, signature) is False
+
+
+def test_verify_rejects_malformed_and_invalid_signatures():
+    private_key, public_key = generate_keypair()
+    valid_sig = sign(private_key, b"target message")
+
+    # Wrong length
+    assert verify(public_key, b"target message", b"too_short") is False
+    assert verify(public_key, b"target message", valid_sig[:63]) is False
+    assert verify(public_key, b"target message", valid_sig + b"\x00") is False
+
+    # Zero signature (r=0, s=0 are invalid DSA components)
+    assert verify(public_key, b"target message", b"\x00" * 64) is False
+
+    # Tampered signature byte
+    mutated_sig = bytearray(valid_sig)
+    mutated_sig[10] ^= 0x01
+    assert verify(public_key, b"target message", bytes(mutated_sig)) is False
+
+    # Non-bytes signature inputs fail safely as False
+    assert verify(public_key, b"target message", "string_signature") is False
+    assert verify(public_key, b"target message", None) is False
+    assert verify(public_key, b"target message", 12345) is False
+
+
+def test_ecdsa_deserialize_rejects_malformed_truncated_and_unsupported():
+    with pytest.raises(ValueError):
+        deserialize_public_key(b"not a valid pem")
+
+    truncated_pem = b"-----BEGIN PUBLIC KEY-----\nMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE"
+    with pytest.raises(ValueError):
+        deserialize_public_key(truncated_pem)
+
+    foreign_priv = ec.generate_private_key(ec.SECP384R1())
+    foreign_pub_pem = foreign_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        deserialize_public_key(foreign_pub_pem)
+
+    rsa_priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    rsa_pub_pem = rsa_priv.public_key().public_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+    with pytest.raises(TypeError, match="The provided key is not an EC public key."):
+        deserialize_public_key(rsa_pub_pem)
+
+    with pytest.raises(TypeError, match="Public key data must be bytes-like."):
+        deserialize_public_key("not-bytes-string")
+
+    with pytest.raises(ValueError):
+        deserialize_private_key(b"not a valid pem")
+
+    foreign_priv_pem = foreign_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        deserialize_private_key(foreign_priv_pem)
+
+    rsa_priv_pem = rsa_priv.private_bytes(
+        encoding=serialization.Encoding.PEM,
+        format=serialization.PrivateFormat.PKCS8,
+        encryption_algorithm=serialization.NoEncryption(),
+    )
+    with pytest.raises(TypeError, match="The provided key is not an EC private key."):
+        deserialize_private_key(rsa_priv_pem)
+
+    with pytest.raises(TypeError, match="Private key data must be bytes-like."):
+        deserialize_private_key("not-bytes-string")
