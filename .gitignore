@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+*.png
+!frontend/src/assets/*.jpg
+!frontend/src/assets/*.png
+dist/
+node_modules/
+.env
