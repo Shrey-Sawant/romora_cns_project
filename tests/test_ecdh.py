@@ -1,8 +1,12 @@
 import pytest
-from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec, rsa
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from crypto.ecdh import (
+    DERIVED_KEY_LENGTH,
+    SESSION_ID_INFO,
+    SESSION_KEY_INFO,
     compute_shared_secret,
     derive_session,
     derive_session_id,
@@ -283,3 +287,181 @@ def test_handshake_aborts_before_shared_secret_derivation(monkeypatch):
     # Invariant: Neither shared secret computation nor session derivation was reached
     assert call_count["derive_session"] == 0
     assert call_count["compute_shared_secret"] == 0
+
+
+def test_session_derivation_contract_constants():
+    """Verify production constants strictly match Guardrails Option A specification."""
+    assert SESSION_KEY_INFO == b"romora-v1-session"
+    assert SESSION_ID_INFO == b"romora-v1-sid"
+    assert DERIVED_KEY_LENGTH == 32
+
+
+def test_session_derivation_matches_independent_hkdf_oracle():
+    """Independently verify session_key and session_id against direct HKDF-SHA256 calculations."""
+    alice_priv, alice_pub = generate_keypair()
+    bob_priv, bob_pub = generate_keypair()
+
+    # Raw ECDH shared secret computed via cryptography's exchange
+    raw_secret_ab = alice_priv.exchange(ec.ECDH(), bob_pub)
+    raw_secret_ba = bob_priv.exchange(ec.ECDH(), alice_pub)
+    assert raw_secret_ab == raw_secret_ba
+
+    # Ground-truth oracle HKDF instances computed directly with documented parameters
+    oracle_key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-session",
+    ).derive(raw_secret_ab)
+
+    oracle_sid = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-sid",
+    ).derive(raw_secret_ab)
+
+    # 1. Verify individual derivation helpers against oracle
+    derived_key = derive_session_key(raw_secret_ab)
+    derived_sid = derive_session_id(raw_secret_ab)
+
+    assert derived_key == oracle_key
+    assert derived_sid == oracle_sid
+
+    # 2. Verify joint derive_session helper matches oracle for both Alice and Bob
+    alice_key, alice_sid = derive_session(alice_priv, bob_pub)
+    bob_key, bob_sid = derive_session(bob_priv, alice_pub)
+
+    assert alice_key == oracle_key
+    assert alice_sid == oracle_sid
+    assert bob_key == oracle_key
+    assert bob_sid == oracle_sid
+
+    # 3. Structural invariant: 32 bytes each, distinct outputs
+    assert len(oracle_key) == 32
+    assert len(oracle_sid) == 32
+    assert oracle_key != oracle_sid
+
+
+def test_session_derivation_does_not_chain_key_into_id():
+    """Verify Option A non-chaining contract: session_id is not derived by chaining session_key."""
+    alice_priv, alice_pub = generate_keypair()
+    bob_priv, bob_pub = generate_keypair()
+
+    session_key, session_id = derive_session(alice_priv, bob_pub)
+
+    # In Option B (hierarchical derivation), session_id would be derived from session_key
+    chained_id = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-sid",
+    ).derive(session_key)
+
+    # Option A contract invariant: session_id must not equal chained_id
+    assert session_id != chained_id
+
+
+def test_session_derivation_domain_separation():
+    """Verify domain separation between distinct HKDF info tags on the same shared secret."""
+    raw_secret = b"\x5a" * 32
+
+    key = derive_session_key(raw_secret)
+    sid = derive_session_id(raw_secret)
+
+    # Alternate context tags on the same raw secret
+    alt_derivation_1 = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-other",
+    ).derive(raw_secret)
+
+    alt_derivation_2 = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"",
+    ).derive(raw_secret)
+
+    # All outputs must be distinct from each other
+    derivation_set = {key, sid, alt_derivation_1, alt_derivation_2}
+    assert len(derivation_set) == 4
+
+
+def test_session_derivation_deterministic_for_fixed_secret():
+    """Verify deterministic repeatability against a fixed 32-byte shared secret."""
+    fixed_secret = bytes(range(32))  # 0x00, 0x01, ..., 0x1f
+
+    expected_key = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-session",
+    ).derive(fixed_secret)
+
+    expected_sid = HKDF(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=None,
+        info=b"romora-v1-sid",
+    ).derive(fixed_secret)
+
+    # Derive multiple times to ensure strict deterministic purity
+    for _ in range(3):
+        assert derive_session_key(fixed_secret) == expected_key
+        assert derive_session_id(fixed_secret) == expected_sid
+
+
+def test_session_derivation_rejects_invalid_input_types():
+    """Verify derive_session_key and derive_session_id reject non-bytes-like inputs."""
+    invalid_inputs = [None, 12345, "a_secret_string", [1, 2, 3], {"secret": b"bytes"}]
+
+    for invalid in invalid_inputs:
+        with pytest.raises(TypeError, match="Shared secret must be bytes-like."):
+            derive_session_key(invalid)
+        with pytest.raises(TypeError, match="Shared secret must be bytes-like."):
+            derive_session_id(invalid)
+
+
+def test_session_derivation_accepts_bytearray_and_memoryview():
+    """Verify derive_session_key and derive_session_id accept bytearray and memoryview inputs."""
+    raw_secret = b"\x37" * 32
+
+    expected_key = derive_session_key(raw_secret)
+    expected_sid = derive_session_id(raw_secret)
+
+    # bytearray input
+    ba_secret = bytearray(raw_secret)
+    assert derive_session_key(ba_secret) == expected_key
+    assert derive_session_id(ba_secret) == expected_sid
+
+    # memoryview input
+    mv_secret = memoryview(raw_secret)
+    assert derive_session_key(mv_secret) == expected_key
+    assert derive_session_id(mv_secret) == expected_sid
+
+
+def test_derive_session_rejects_invalid_key_types_and_curves():
+    """Verify derive_session enforces P-256 curve and key types on both operands."""
+    alice_priv, alice_pub = generate_keypair()
+    foreign_priv = ec.generate_private_key(ec.SECP384R1())
+    foreign_pub = foreign_priv.public_key()
+    rsa_priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    rsa_pub = rsa_priv.public_key()
+
+    # Invalid types
+    with pytest.raises(TypeError, match="Private key must be an EllipticCurvePrivateKey instance."):
+        derive_session(rsa_priv, alice_pub)
+    with pytest.raises(TypeError, match="Private key must be an EllipticCurvePrivateKey instance."):
+        derive_session("not-a-key", alice_pub)
+    with pytest.raises(TypeError, match="Peer public key must be an EllipticCurvePublicKey instance."):
+        derive_session(alice_priv, rsa_pub)
+    with pytest.raises(TypeError, match="Peer public key must be an EllipticCurvePublicKey instance."):
+        derive_session(alice_priv, 12345)
+
+    # Curve mismatch
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        derive_session(foreign_priv, alice_pub)
+    with pytest.raises(ValueError, match="Expected secp256r1 curve, got secp384r1"):
+        derive_session(alice_priv, foreign_pub)
